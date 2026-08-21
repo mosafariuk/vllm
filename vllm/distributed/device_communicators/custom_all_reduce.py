@@ -482,6 +482,23 @@ class CustomAllreduce:
         self._custom_ar_max_bytes = max(
             self._custom_ar_max_bytes, input.numel() * input.element_size()
         )
+        # Milestone log so an out-of-process harness can read engagement from
+        # the run's own stderr. `largest` is the load-bearing figure: any value
+        # above the 8 MiB pre-fix default is a tensor that would previously
+        # have fallen through to NCCL.
+        if envs.VLLM_BATCH_INVARIANT and (
+            self._custom_ar_calls in (1, 10, 100, 1000, 10000)
+            or self._custom_ar_calls % 50000 == 0
+        ):
+            logger.info(
+                "BATCH_INVARIANT_CUSTOM_AR_ENGAGED rank=%s calls=%d "
+                "largest=%d bytes max_size=%d pre_fix_default=%d",
+                self.rank,
+                self._custom_ar_calls,
+                self._custom_ar_max_bytes,
+                self.max_size,
+                8192 * 1024,
+            )
         if self._IS_CAPTURING:
             if torch.cuda.is_current_stream_capturing():
                 return self.all_reduce(input, registered=True)
