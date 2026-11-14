@@ -805,6 +805,14 @@ def dispatch_cpu_unquantized_gemm(
     N, K = layer.weight.size()
     dtype = layer.weight.dtype
 
+    if envs.VLLM_BATCH_INVARIANT:
+        # PROTOTYPE: vendor GEMM kernels (zentorch, sgl, oneDNN) bypass the
+        # aten overrides installed by batch-invariant mode.
+        layer.cpu_linear = lambda x, weight, bias: torch.nn.functional.linear(
+            x, weight, bias
+        )
+        return
+
     # Zen CPU path: zentorch_linear_unary with optional eager weight prepacking.
     if current_platform.is_zen_cpu() and hasattr(
         torch.ops.zentorch, "zentorch_linear_unary"
