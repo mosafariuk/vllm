@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+import vllm.envs as envs
 from vllm import _cpu_ops as ops
 from vllm.config.model import LogprobsMode
 from vllm.platforms import current_platform
@@ -54,12 +55,30 @@ class LogprobTokenIdsState:
         return int(self.num_token_ids_np[idx_mapping_np].max(initial=0))
 
 
+def _compute_token_logprobs_eager(
+    logits: torch.Tensor, token_ids: torch.Tensor
+) -> torch.Tensor:
+    # log_softmax did not differ for one row vs the same row among several
+    # (0 of 300 random rows); eager logsumexp and the compiled version did.
+    logprobs = torch.log_softmax(logits.to(torch.float32), dim=-1)
+    return logprobs.gather(-1, token_ids.to(torch.int64))
+
+
+def compute_token_logprobs(
+    logits: torch.Tensor, token_ids: torch.Tensor
+) -> torch.Tensor:
+    # PROTOTYPE: see _compute_token_logprobs_eager.
+    if envs.VLLM_BATCH_INVARIANT:
+        return _compute_token_logprobs_eager(logits, token_ids)
+    return _compute_token_logprobs_compiled(logits, token_ids)
+
+
 @torch.compile(
     dynamic=True,
     fullgraph=True,
     backend=current_platform.simple_compile_backend,
 )
-def compute_token_logprobs(
+def _compute_token_logprobs_compiled(
     logits: torch.Tensor, token_ids: torch.Tensor
 ) -> torch.Tensor:
     token_ids = token_ids.to(torch.int64)

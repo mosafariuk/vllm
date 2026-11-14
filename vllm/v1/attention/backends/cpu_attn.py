@@ -48,6 +48,12 @@ logger = init_logger(__name__)
 class CPUAttentionBackend(AttentionBackend):
     forward_includes_kv_cache_update: bool = False
 
+    @classmethod
+    def supports_batch_invariance(cls) -> bool:
+        # PROTOTYPE: only invariant with VLLM_CPU_ATTN_SPLIT_KV=0, which is
+        # not forced here.
+        return True
+
     supported_dtypes: ClassVar[list[torch.dtype]] = [
         torch.float16,
         torch.bfloat16,

@@ -1384,6 +1384,54 @@ def _resolve_block_sizes():
         _fp32_num_stages = 2
 
 
+# PROTOTYPE (not for upstream as is): batch-invariant matmul on CPU.
+# Each output row is one gemv over its own input row, so a row's result does
+# not see the other rows in the call (stable in the tests run; proof of cause
+# only, slow Python loop).
+def _mm_rowwise_cpu(a, b, bias=None):
+    bt = b.t().contiguous()
+    out = torch.empty(a.shape[0], b.shape[1], dtype=a.dtype)
+    for i in range(a.shape[0]):
+        torch.mv(bt, a[i], out=out[i])
+    if bias is not None:
+        out += bias
+    return out
+
+
+def _mm_cpu(a, b):
+    return _mm_rowwise_cpu(a, b)
+
+
+def _addmm_cpu(bias, a, b, *, beta=1, alpha=1):
+    out = _mm_rowwise_cpu(a, b)
+    if alpha != 1:
+        out *= alpha
+    return out + (bias if beta == 1 else beta * bias)
+
+
+def _linear_cpu(input, weight, bias=None):
+    out = _mm_rowwise_cpu(input.reshape(-1, input.shape[-1]), weight.t(), bias=bias)
+    return out.view(*input.shape[:-1], out.shape[-1])
+
+
+def _matmul_cpu(a, b):
+    if b.dim() == 2 and a.dim() >= 2:
+        r = _mm_rowwise_cpu(a.reshape(-1, a.shape[-1]), b)
+        r = r.view(*a.shape[:-1], b.shape[1])
+    elif a.dim() == 1 and b.dim() == 2:
+        r = _mm_rowwise_cpu(a[None], b)[0]
+    elif a.dim() == 2 and b.dim() == 1:
+        r = torch.mv(a, b)
+    elif a.dim() == 1 and b.dim() == 1:
+        r = torch.dot(a, b)
+    else:
+        # Not measured: batched right operand. Falls back to einsum (bmm),
+        # which this prototype has not checked for row-count dependence.
+        # A 1-D right operand with a >2-D left operand is not handled.
+        r = torch.einsum("...ij,...jk->...ik", a, b)
+    return r
+
+
 def enable_batch_invariant_mode():
     global _batch_invariant_MODE, _batch_invariant_LIB
     global _fp16_block_size_n, _fp32_block_size_n, _fp32_num_stages
@@ -1396,6 +1444,17 @@ def enable_batch_invariant_mode():
     _batch_invariant_LIB = torch.library.Library("aten", "IMPL")
 
     key = current_platform.dispatch_key
+    if current_platform.is_cpu():
+        # PROTOTYPE: row-wise matmul only. layer_norm, softmax, log_softmax,
+        # gelu, relu and add showed no row-count dependence in the tests;
+        # logsumexp and sum/mean over rows wider than 32768 did, and are not
+        # overridden here (the logprob path avoids logsumexp instead).
+        # The .out and .dtype overloads are not registered.
+        _batch_invariant_LIB.impl("aten::mm", _mm_cpu, key)
+        _batch_invariant_LIB.impl("aten::addmm", _addmm_cpu, key)
+        _batch_invariant_LIB.impl("aten::matmul", _matmul_cpu, key)
+        _batch_invariant_LIB.impl("aten::linear", _linear_cpu, key)
+        return
     if current_platform.is_cuda_alike():
         if current_platform.is_rocm() or current_platform.is_device_capability_family(
             80
