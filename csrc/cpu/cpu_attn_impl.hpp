@@ -1832,13 +1832,20 @@ class AttentionMainLoop {
                   ((q_head_tile_size + max_q_head_num_per_iter - 1) /
                    max_q_head_num_per_iter) *
                   max_q_head_num_per_iter;
+              // Prototype: size the KV tile from the full default Q tile,
+              // not this tile's Q count. Never larger than the tile the
+              // scheduler sized the scratchpad for, so no overrun.
+              const int32_t full_q_tile =
+                  ((default_tile_size + max_q_head_num_per_iter - 1) /
+                   max_q_head_num_per_iter) *
+                  max_q_head_num_per_iter;
               const int32_t kv_tile_size =
                   AttentionScheduler::calcu_tile_size_with_constant_q(
                       available_cache_size, head_dim, sizeof(kv_cache_t),
                       sizeof(q_buffer_t), sizeof(logits_buffer_t),
                       sizeof(partial_output_buffer_t), max_q_head_num_per_iter,
-                      blocksize_alignment, rounded_q_head_tile_size,
-                      rounded_q_head_tile_size <= max_q_head_num_per_iter);
+                      blocksize_alignment, full_q_tile,
+                      full_q_tile <= max_q_head_num_per_iter);
 
               // update buffers
               buffer_manager.update(
